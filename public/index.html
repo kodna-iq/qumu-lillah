@@ -323,6 +323,14 @@
   <footer>قوموا لله — جميع الطلبات مشفّرة الوصول ولا تُعرض إلا لفريق الإشراف</footer>
 
 <script>
+  /* ============================================================
+     إعدادات بوت تلكرام — عدّل القيمتين التاليتين فقط:
+     BOT_TOKEN : التوكن الذي تحصل عليه من BotFather
+     CHAT_ID   : رقم الحساب أو القناة التي تريد استقبال الطلبات فيها
+     ============================================================ */
+  const BOT_TOKEN = "8644160358:AAFYhEB1VPKRxRGF-l6c2sHsS3mH7_45Dxw";
+  const CHAT_ID   = "170383339";
+
   const form       = document.getElementById('submitForm');
   const dropzone   = document.getElementById('dropzone');
   const fileInput  = document.getElementById('photoFile');
@@ -333,8 +341,9 @@
   const ALLOWED_EXT = ['jpg', 'jpeg', 'png'];
   const MAX_SIZE_MB = 20;
   const MAX_FILES = 10;
+  const STORAGE_KEY = 'qumu_lillah_submitted'; // local-only flag, not a real security control
 
-  let selectedFiles = []; // holds File objects chosen so far
+  let selectedFiles = [];
 
   function renderFileList(){
     fileListEl.innerHTML = '';
@@ -371,7 +380,6 @@
         showStatus('تم تجاهل "' + file.name + '" لأن حجمه يتجاوز ' + MAX_SIZE_MB + ' ميغابايت.', false);
         continue;
       }
-      // avoid exact duplicates (same name + size)
       const isDup = selectedFiles.some(f => f.name === file.name && f.size === file.size);
       if (!isDup) selectedFiles.push(file);
     }
@@ -380,7 +388,7 @@
 
   fileInput.addEventListener('change', () => {
     addFiles(Array.from(fileInput.files));
-    fileInput.value = ''; // allow re-selecting the same file later if removed
+    fileInput.value = '';
   });
 
   ['dragenter','dragover'].forEach(evt =>
@@ -398,9 +406,71 @@
     statusBox.className = 'status show ' + (ok ? 'ok' : 'err');
   }
 
+  function escapeHtml(str){
+    return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  async function sendInfoMessage(fields){
+    const infoText =
+      '📸 <b>طلب تقديم صورة جديد</b>\n\n' +
+      '👤 <b>الاسم الكامل:</b> ' + escapeHtml(fields.fullName) + '\n' +
+      '📞 <b>الهاتف:</b> ' + escapeHtml(fields.phone) + '\n' +
+      '✉️ <b>البريد الإلكتروني:</b> ' + escapeHtml(fields.email) + '\n' +
+      '📍 <b>المدينة/المحافظة:</b> ' + escapeHtml(fields.city) + '\n' +
+      '🖼️ <b>عنوان الصورة:</b> ' + escapeHtml(fields.title) + '\n' +
+      '📝 <b>الوصف:</b>\n' + escapeHtml(fields.description) + '\n\n' +
+      '🗂️ <b>عدد الصور المرفقة:</b> ' + fields.fileCount;
+
+    const resp = await fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/sendMessage', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ chat_id: CHAT_ID, text: infoText, parse_mode: 'HTML' })
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.description || 'تعذّر إرسال بيانات الطلب');
+  }
+
+  async function sendPhotosToTelegram(files, title){
+    if (files.length === 1){
+      const fd = new FormData();
+      fd.append('chat_id', CHAT_ID);
+      fd.append('caption', title);
+      fd.append('document', files[0], files[0].name);
+      const resp = await fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/sendDocument', { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.description || 'تعذّر إرسال الصورة');
+      return;
+    }
+
+    const chunks = [];
+    for (let i = 0; i < files.length; i += 10) chunks.push(files.slice(i, i + 10));
+
+    for (let c = 0; c < chunks.length; c++){
+      const chunk = chunks[c];
+      const media = chunk.map((f, i) => ({
+        type: 'document',
+        media: 'attach://file' + i,
+        caption: (c === 0 && i === 0) ? title : undefined
+      }));
+      const fd = new FormData();
+      fd.append('chat_id', CHAT_ID);
+      fd.append('media', JSON.stringify(media));
+      chunk.forEach((f, i) => fd.append('file' + i, f, f.name));
+      const resp = await fetch('https://api.telegram.org/bot' + BOT_TOKEN + '/sendMediaGroup', { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (!data.ok) throw new Error(data.description || 'تعذّر إرسال الصور');
+    }
+  }
+
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     statusBox.className = 'status';
+
+    // Soft, local-only duplicate check (easily bypassed — see limitations note)
+    if (localStorage.getItem(STORAGE_KEY) === '1'){
+      showStatus('يبدو أنك قدّمت مسبقاً من هذا المتصفح. إذا كان هذا خطأً، تواصل معنا مباشرة.', false);
+      return;
+    }
 
     const fullName = document.getElementById('fullName').value.trim();
     const phone    = document.getElementById('phone').value.trim();
@@ -414,31 +484,27 @@
       return;
     }
 
+    if (BOT_TOKEN === "YOUR_BOT_TOKEN_HERE" || CHAT_ID === "YOUR_CHAT_ID_HERE"){
+      showStatus('لم يتم إعداد بوت تلكرام بعد. الرجاء إضافة التوكن ومعرّف المحادثة في كود الصفحة.', false);
+      return;
+    }
+
     submitBtn.disabled = true;
     submitBtn.textContent = 'جارٍ الإرسال...';
 
     try{
-      const fd = new FormData();
-      fd.append('fullName', fullName);
-      fd.append('phone', phone);
-      fd.append('email', email);
-      fd.append('city', city);
-      fd.append('title', title);
-      fd.append('description', desc);
-      selectedFiles.forEach(file => fd.append('photos', file, file.name));
+      await sendInfoMessage({ fullName, phone, email, city, title, description: desc, fileCount: selectedFiles.length });
+      await sendPhotosToTelegram(selectedFiles, title);
 
-      const res = await fetch('/api/submit', { method: 'POST', body: fd });
-      const data = await res.json();
+      localStorage.setItem(STORAGE_KEY, '1');
 
-      if (!data.ok) throw new Error(data.message || 'حدث خطأ غير متوقع');
-
-      showStatus(data.message, true);
+      showStatus('تم إرسال طلبك بنجاح. شكراً لمشاركتك عملك معنا.', true);
       form.reset();
       selectedFiles = [];
       renderFileList();
 
     } catch(err){
-      showStatus(err.message, false);
+      showStatus('حدث خطأ أثناء الإرسال: ' + err.message, false);
     } finally{
       submitBtn.disabled = false;
       submitBtn.textContent = 'إرسال الصورة';
