@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: qumu-lillah-submissions
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHAT_ID
+        sync: false
+      - key: HASH_SALT
+        sync: false
+      - key: PORT
+        value: 3000
